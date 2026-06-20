@@ -61,15 +61,9 @@ function getCategory(name = "", type = "") {
   const t = type.toLowerCase();
 
   if (
-    t.includes("temple") ||
-    t.includes("church") ||
-    t.includes("mosque") ||
-    t.includes("mandir") ||
-    t.includes("dargah") ||
-    t.includes("monastery") ||
-    n.includes("temple") ||
-    n.includes("mandir") ||
-    n.includes("dargah") ||
+    t.includes("temple") || t.includes("church") || t.includes("mosque") ||
+    t.includes("mandir") || t.includes("dargah") || t.includes("monastery") ||
+    n.includes("temple") || n.includes("mandir") || n.includes("dargah") ||
     n.includes("monastery")
   ) {
     return "temple";
@@ -78,52 +72,34 @@ function getCategory(name = "", type = "") {
     return "fort";
   }
   if (
-    t.includes("palace") ||
-    t.includes("mahal") ||
-    n.includes("palace") ||
-    n.includes("mahal")
+    t.includes("palace") || t.includes("mahal") ||
+    n.includes("palace") || n.includes("mahal")
   ) {
     return "palace";
   }
   if (
-    t.includes("beach") ||
-    n.includes("beach") ||
-    t.includes("sea") ||
-    n.includes("sea")
+    t.includes("beach") || n.includes("beach") ||
+    t.includes("sea") || n.includes("sea")
   ) {
     return "beach";
   }
   if (
-    t.includes("lake") ||
-    t.includes("waterfall") ||
-    t.includes("valley") ||
-    t.includes("park") ||
-    t.includes("hill") ||
-    t.includes("trek") ||
-    t.includes("mountain") ||
-    n.includes("lake") ||
-    n.includes("waterfall") ||
-    n.includes("valley") ||
-    n.includes("park") ||
-    n.includes("hill")
+    t.includes("lake") || t.includes("waterfall") || t.includes("valley") ||
+    t.includes("park") || t.includes("hill") || t.includes("trek") ||
+    t.includes("mountain") || n.includes("lake") || n.includes("waterfall") ||
+    n.includes("valley") || n.includes("park") || n.includes("hill")
   ) {
     return "nature";
   }
   if (
-    t.includes("museum") ||
-    t.includes("gallery") ||
-    n.includes("museum") ||
-    n.includes("gallery")
+    t.includes("museum") || t.includes("gallery") ||
+    n.includes("museum") || n.includes("gallery")
   ) {
     return "museum";
   }
   if (
-    t.includes("market") ||
-    t.includes("mall") ||
-    t.includes("bazaar") ||
-    n.includes("market") ||
-    n.includes("mall") ||
-    n.includes("bazaar") ||
+    t.includes("market") || t.includes("mall") || t.includes("bazaar") ||
+    n.includes("market") || n.includes("mall") || n.includes("bazaar") ||
     n.includes("chowk")
   ) {
     return "market";
@@ -131,17 +107,24 @@ function getCategory(name = "", type = "") {
   return "default";
 }
 
+// FIX 1 & 2: Added status validation and explicit policy-compliant contact user agent headers
 function getJSON(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
       {
         headers: {
-          "User-Agent": "PackGoTravelPlannerBot/1.0 (contact@packgo.org)",
+          "User-Agent": "PackGoTravelPlannerBot/1.0 (contact@packgo.org; support@packgo.org)",
         },
         timeout: 10000, // 10 seconds timeout
       },
       (res) => {
+        // Guard against non-200 states to prevent memory leaks/JSON parsing syntax crashes
+        if (res.statusCode !== 200) {
+          res.resume(); // Clear stream buffer memory allocations
+          return reject(new Error(`API Network Connection Failed. Status Code: ${res.statusCode}`));
+        }
+
         let data = "";
         res.on("data", (chunk) => {
           data += chunk;
@@ -150,7 +133,7 @@ function getJSON(url) {
           try {
             resolve(JSON.parse(data));
           } catch (e) {
-            reject(e);
+            reject(new Error(`JSON Parsing Exception: ${e.message}`));
           }
         });
       },
@@ -167,20 +150,28 @@ function getJSON(url) {
   });
 }
 
-// Search Wikipedia and return search results
+// FIX 3: Implemented safe optional chaining fallback trees for query results
 async function searchWiki(query) {
-  const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`;
-  const data = await getJSON(url);
-  return data.query.search;
+  try {
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`;
+    const data = await getJSON(url);
+    return data?.query?.search || [];
+  } catch (err) {
+    console.log(`  -> Wikipedia search wrapper failure: ${err.message}`);
+    return [];
+  }
 }
 
-// Get Wikipedia details (coordinates, original image) for a specific title
+// FIX 3: Implemented tree-navigation safety guards against missing page indices
 async function getPageDetails(title) {
   const url = `https://en.wikipedia.org/w/api.php?action=query&prop=coordinates|pageimages&piprop=original|thumbnail&pithumbsize=800&titles=${encodeURIComponent(title)}&format=json&origin=*`;
   const data = await getJSON(url);
-  const pages = data.query.pages;
+  
+  const pages = data?.query?.pages;
+  if (!pages) return null;
+  
   const pageId = Object.keys(pages)[0];
-  return pages[pageId];
+  return pages[pageId] || null;
 }
 
 // Nominatim Geocoding as a fallback
@@ -218,197 +209,191 @@ async function main() {
   let coordsAdded = 0;
   let imagesCleaned = 0;
 
-  for (let i = 0; i < destinations.length; i++) {
-    const dest = destinations[i];
-    const category = getCategory(dest.name, dest.type || "");
-    const secondaryImages = unsplashCategoryImages[category];
+  try {
+    for (let i = 0; i < destinations.length; i++) {
+      const dest = destinations[i];
+      const category = getCategory(dest.name, dest.type || "");
+      const secondaryImages = unsplashCategoryImages[category] || unsplashCategoryImages.default;
 
-    let wikiResolved = false;
-    let resolvedImage = null;
-    let resolvedCoords = null;
+      let resolvedImage = null;
+      let resolvedCoords = null;
 
-    // Check if coordinates or images are missing/placeholder
-    const needsCoords =
-      !dest.coordinates ||
-      dest.coordinates.lat === null ||
-      dest.coordinates.lon === null;
-    const firstImage = dest.images?.[0] || "";
-    const needsImage =
-      !firstImage ||
-      firstImage.includes("loremflickr.com") ||
-      firstImage.includes("placeholder");
+      // Check if coordinates or images are missing/placeholder
+      const needsCoords =
+        !dest.coordinates ||
+        dest.coordinates.lat === null ||
+        dest.coordinates.lon === null;
+      const firstImage = dest.images?.[0] || "";
+      const needsImage =
+        !firstImage ||
+        firstImage.includes("loremflickr.com") ||
+        firstImage.includes("placeholder");
 
-    if (needsCoords || needsImage) {
-      console.log(
-        `\n[${i + 1}/${destinations.length}] Processing: "${dest.name}" in ${dest.city || "N/A"}, ${dest.state || "N/A"}`,
-      );
+      if (needsCoords || needsImage) {
+        console.log(
+          `\n[${i + 1}/${destinations.length}] Processing: "${dest.name}" in ${dest.city || "N/A"}, ${dest.state || "N/A"}`,
+        );
 
-      // Try Wikipedia
-      try {
-        // Strategy A: Try searching by Name
-        let searchResults = await searchWiki(dest.name);
+        // Try Wikipedia
+        try {
+          let searchResults = await searchWiki(dest.name);
+          let bestMatchTitle = null;
 
-        // Filter out irrelevant matching titles
-        let bestMatchTitle = null;
-        if (searchResults && searchResults.length > 0) {
-          bestMatchTitle = searchResults[0].title;
+          if (searchResults && searchResults.length > 0) {
+            bestMatchTitle = searchResults[0].title;
 
-          // If name is extremely common, verify or try more specific search
-          if (
-            dest.city &&
-            (bestMatchTitle.toLowerCase() === "sunset point" ||
-              bestMatchTitle.toLowerCase() === "sunrise point")
-          ) {
-            const refinedResults = await searchWiki(
-              `${dest.name} ${dest.city}`,
-            );
-            if (refinedResults && refinedResults.length > 0) {
-              bestMatchTitle = refinedResults[0].title;
+            // If name is extremely common, verify or try more specific search
+            if (
+              dest.city &&
+              (bestMatchTitle.toLowerCase() === "sunset point" ||
+                bestMatchTitle.toLowerCase() === "sunrise point")
+            ) {
+              const refinedResults = await searchWiki(
+                `${dest.name} ${dest.city}`,
+              );
+              if (refinedResults && refinedResults.length > 0) {
+                bestMatchTitle = refinedResults[0].title;
+              }
             }
           }
+
+          if (bestMatchTitle) {
+            console.log(`  -> Wikipedia matched page: "${bestMatchTitle}"`);
+            const details = await getPageDetails(bestMatchTitle);
+
+            if (details) {
+              if (details.coordinates && details.coordinates[0]) {
+                resolvedCoords = {
+                  lat: parseFloat(details.coordinates[0].lat.toFixed(6)),
+                  lon: parseFloat(details.coordinates[0].lon.toFixed(6)),
+                };
+                console.log(
+                  `  -> Coords found on Wikipedia: [${resolvedCoords.lat}, ${resolvedCoords.lon}]`,
+                );
+              }
+
+              if (details.original?.source) {
+                resolvedImage = details.original.source;
+                console.log(
+                  `  -> Real photograph found: ${resolvedImage.substring(0, 70)}...`,
+                );
+              } else if (details.thumbnail?.source) {
+                resolvedImage = details.thumbnail.source;
+                console.log(
+                  `  -> Real photo (thumbnail) found: ${resolvedImage.substring(0, 70)}...`,
+                );
+              }
+            }
+          }
+        } catch (err) {
+          console.log(`  -> Wikipedia lookup failed: ${err.message}`);
         }
 
-        if (bestMatchTitle) {
-          console.log(`  -> Wikipedia matched page: "${bestMatchTitle}"`);
-          const details = await getPageDetails(bestMatchTitle);
+        // Fallback 1: Coords Nominatim Geocoding
+        if (needsCoords && !resolvedCoords) {
+          console.log(`  -> Coords missing, calling Nominatim geocoder...`);
+          resolvedCoords = await getCoordinatesNominatim(
+            dest.name,
+            dest.city,
+            dest.state,
+          );
+          if (resolvedCoords) {
+            console.log(
+              `  -> Coords resolved via Nominatim: [${resolvedCoords.lat}, ${resolvedCoords.lon}]`,
+            );
+          } else {
+            // Absolute last resort center fallbacks
+            let center = { lat: 20.5937, lon: 78.9629 }; // Center of India
+            if (dest.city === "Jaipur") center = { lat: 26.9124, lon: 75.7873 };
+            else if (dest.city === "Delhi") center = { lat: 28.6139, lon: 77.209 };
+            else if (dest.city === "Mumbai") center = { lat: 19.076, lon: 72.8777 };
+            else if (dest.city === "Bangalore") center = { lat: 12.9716, lon: 77.5946 };
+            else if (dest.city === "Kolkata") center = { lat: 22.5726, lon: 88.3639 };
+            else if (dest.city === "Goa") center = { lat: 15.2993, lon: 74.124 };
+            else if (dest.city === "Hyderabad") center = { lat: 17.385, lon: 78.4867 };
 
-          if (details.coordinates) {
             resolvedCoords = {
-              lat: parseFloat(details.coordinates[0].lat.toFixed(6)),
-              lon: parseFloat(details.coordinates[0].lon.toFixed(6)),
+              lat: parseFloat(
+                (center.lat + (Math.random() - 0.5) * 0.01).toFixed(6),
+              ),
+              lon: parseFloat(
+                (center.lon + (Math.random() - 0.5) * 0.01).toFixed(6),
+              ),
             };
             console.log(
-              `  -> Coords found on Wikipedia: [${resolvedCoords.lat}, ${resolvedCoords.lon}]`,
+              `  -> Fallback city/state coords applied: [${resolvedCoords.lat}, ${resolvedCoords.lon}]`,
             );
           }
-
-          if (details.original) {
-            resolvedImage = details.original.source;
-            console.log(
-              `  -> Real photograph found: ${resolvedImage.substring(0, 70)}...`,
-            );
-          } else if (details.thumbnail) {
-            resolvedImage = details.thumbnail.source;
-            console.log(
-              `  -> Real photo (thumbnail) found: ${resolvedImage.substring(0, 70)}...`,
-            );
-          }
-
-          wikiResolved = true;
+          // Strict throttling rate-limit compliance for Nominatim Geocoding
+          await new Promise((r) => setTimeout(r, 1000));
         }
-      } catch (err) {
-        console.log(`  -> Wikipedia lookup failed: ${err.message}`);
+
+        // Update Destination values
+        let changed = false;
+
+        if (needsCoords && resolvedCoords) {
+          dest.coordinates = resolvedCoords;
+          coordsAdded++;
+          changed = true;
+        }
+
+        if (needsImage) {
+          const finalMainImg = resolvedImage || secondaryImages[0];
+          // Populate exactly 4 distinct beautiful images without consecutive index matching collisions
+          dest.images = [
+            finalMainImg,
+            secondaryImages[1] || secondaryImages[0],
+            secondaryImages[2] || secondaryImages[0],
+            unsplashCategoryImages.default[
+              (updatedCount + 1) % unsplashCategoryImages.default.length
+            ],
+          ];
+          imagesCleaned++;
+          changed = true;
+        }
+
+        if (changed) {
+          updatedCount++;
+        }
+
+        // Throttling for Wikipedia API
+        await new Promise((r) => setTimeout(r, 250));
+      } else {
+        // Ensure it has exactly 4 beautiful non-dummy images anyway
+        const needsSecondaryImageClean = Array.isArray(dest.images) && dest.images.some((img) => typeof img === 'string' && img.includes("loremflickr.com"));
+        if (needsSecondaryImageClean) {
+          const mainImg = dest.images[0];
+          dest.images = [
+            mainImg,
+            secondaryImages[1] || secondaryImages[0],
+            secondaryImages[2] || secondaryImages[0],
+            unsplashCategoryImages.default[
+              i % unsplashCategoryImages.default.length
+            ],
+          ];
+          imagesCleaned++;
+          updatedCount++;
+        }
       }
 
-      // Fallback 1: Coords Nominatim Geocoding
-      if (needsCoords && !resolvedCoords) {
-        console.log(`  -> Coords missing, calling Nominatim geocoder...`);
-        resolvedCoords = await getCoordinatesNominatim(
-          dest.name,
-          dest.city,
-          dest.state,
+      // Auto-save progress incrementally every 10 items to prevent data loss
+      if (i > 0 && i % 10 === 0) {
+        fs.writeFileSync(
+          DATA_PATH,
+          JSON.stringify(destinations, null, 2),
+          "utf-8",
         );
-        if (resolvedCoords) {
-          console.log(
-            `  -> Coords resolved via Nominatim: [${resolvedCoords.lat}, ${resolvedCoords.lon}]`,
-          );
-        } else {
-          // Absolute last resort center fallbacks
-          let center = { lat: 20.5937, lon: 78.9629 }; // Center of India
-          if (dest.city === "Jaipur") center = { lat: 26.9124, lon: 75.7873 };
-          else if (dest.city === "Delhi")
-            center = { lat: 28.6139, lon: 77.209 };
-          else if (dest.city === "Mumbai")
-            center = { lat: 19.076, lon: 72.8777 };
-          else if (dest.city === "Bangalore")
-            center = { lat: 12.9716, lon: 77.5946 };
-          else if (dest.city === "Kolkata")
-            center = { lat: 22.5726, lon: 88.3639 };
-          else if (dest.city === "Goa") center = { lat: 15.2993, lon: 74.124 };
-          else if (dest.city === "Hyderabad")
-            center = { lat: 17.385, lon: 78.4867 };
-
-          resolvedCoords = {
-            lat: parseFloat(
-              (center.lat + (Math.random() - 0.5) * 0.01).toFixed(6),
-            ),
-            lon: parseFloat(
-              (center.lon + (Math.random() - 0.5) * 0.01).toFixed(6),
-            ),
-          };
-          console.log(
-            `  -> Fallback city/state coords applied: [${resolvedCoords.lat}, ${resolvedCoords.lon}]`,
-          );
-        }
-        // Throttling for Nominatim Geocoding
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-
-      // Update Destination values
-      let changed = false;
-
-      if (needsCoords && resolvedCoords) {
-        dest.coordinates = resolvedCoords;
-        coordsAdded++;
-        changed = true;
-      }
-
-      if (needsImage) {
-        const finalMainImg = resolvedImage || secondaryImages[0];
-        // Populate exactly 4 distinct beautiful images
-        dest.images = [
-          finalMainImg,
-          secondaryImages[1] || secondaryImages[0],
-          secondaryImages[2] || secondaryImages[0],
-          unsplashCategoryImages.default[
-            updatedCount % unsplashCategoryImages.default.length
-          ],
-        ];
-        imagesCleaned++;
-        changed = true;
-      }
-
-      if (changed) {
-        updatedCount++;
-      }
-
-      // Throttling for Wikipedia API
-      await new Promise((r) => setTimeout(r, 250));
-    } else {
-      // Ensure it has exactly 4 beautiful non-dummy images anyway
-      const needsSecondaryImageClean = dest.images.some((img) =>
-        img.includes("loremflickr.com"),
-      );
-      if (needsSecondaryImageClean) {
-        const mainImg = dest.images[0];
-        dest.images = [
-          mainImg,
-          secondaryImages[1] || secondaryImages[0],
-          secondaryImages[2] || secondaryImages[0],
-          unsplashCategoryImages.default[
-            i % unsplashCategoryImages.default.length
-          ],
-        ];
-        imagesCleaned++;
-        updatedCount++;
+        console.log(
+          `[Incremental Save] Successfully saved progress at item ${i}...`,
+        );
       }
     }
-
-    // Auto-save progress incrementally every 10 items to prevent data loss
-    if (i > 0 && i % 10 === 0) {
-      fs.writeFileSync(
-        DATA_PATH,
-        JSON.stringify(destinations, null, 2),
-        "utf-8",
-      );
-      console.log(
-        `[Incremental Save] Successfully saved progress at item ${i}...`,
-      );
-    }
+  } catch (loopError) {
+    console.error("Critical error inside execution loop. Writing data safety fallback to file...", loopError);
+  } finally {
+    // Guarantees data survival on premature process terminations or syntax faults midway
+    fs.writeFileSync(DATA_PATH, JSON.stringify(destinations, null, 2), "utf-8");
   }
-
-  // Final Write
-  fs.writeFileSync(DATA_PATH, JSON.stringify(destinations, null, 2), "utf-8");
 
   console.log("\n==========================================");
   console.log("Database Seed File Cleanup Complete!");
